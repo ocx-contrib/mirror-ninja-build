@@ -11,19 +11,23 @@ expect.ok(r_version)
 expect.matches(r_version.stdout, r"\d+\.\d+\.\d+")
 
 # Tier 3: a real build, checked by its OUTPUT rather than its log. The rule
-# writes a token to a declared output file; ninja must parse the manifest,
-# schedule the edge and spawn the command for that file to exist. A stub that
-# merely exits 0 leaves `token.txt` absent and reds on the read below.
+# copies a source file the test wrote to a declared output; ninja must parse the
+# manifest, schedule the edge and spawn the command for that output to exist. A
+# stub that merely exits 0 leaves `token.txt` absent and reds below.
 #
-# `echo OCXSMOKE>token.txt` — no space before `>` — is the one spelling that
-# behaves identically under /bin/sh and cmd.exe (cmd would otherwise fold the
-# space into the file, and a value ending in a digit would be read as a redirect
-# handle; "OCXSMOKE" ends in a letter). The trailing newline differs per
-# platform, hence `contains`, not `eq`.
+# A COPY, not a shell redirect. The previous spelling used
+# `echo OCXSMOKE>token.txt`, chosen to behave the same under /bin/sh and
+# cmd.exe — it did not: both Windows legs built green yet produced no file, so
+# `ocx.exists` reded while `expect.ok` passed. Copying sidesteps shell quoting
+# and redirection entirely; the command differs per platform because there is no
+# single spelling that copies on both.
 TOKEN = "OCXSMOKE"
+ocx.write_file("source.txt", TOKEN + "\n")
+
+COPY = "cmd /c copy /y $in $out" if ocx.target_platform.os == ocx.os.Windows else "cp $in $out"
 ocx.write_file(
     "build.ninja",
-    "rule gen\n  command = echo " + TOKEN + ">token.txt\nbuild token.txt: gen\n",
+    "rule gen\n  command = " + COPY + "\nbuild token.txt: gen source.txt\n",
 )
 
 r_build = ocx.run(NINJA, "token.txt")
