@@ -1,0 +1,118 @@
+extends: ../mirror-base.yml
+
+name: ninja
+
+# Logical index package `ninja-build/ninja` at the physical path
+# `ghcr.io/ocx-contrib/ninja-build/ninja` — slash segments, never
+# hyphen-flattened. The first segment must be this repo's own GitHub owner:
+# GITHUB_TOKEN only authorises packages owned by the repo the workflow runs in.
+#
+# Succeeds the flat `ocx.sh/ninja` coordinate this repository published before
+# the grouped layout, the same way mirror-kitware/cmake succeeds mirror-cmake.
+target:
+  registry: ghcr.io
+  repository: ocx-contrib/ninja-build/ninja
+
+source:
+  type: github_release
+  owner: ninja-build
+  repo: ninja
+  tag_pattern: "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+
+# ─── libc gate (Phase 3.5) — the evidence, not the conclusion ───────────────
+#
+# Ninja is a C++ build linked against the system libc. Upstream ships ONE Linux
+# zip per arch and it is NOT static. Measured on v1.13.2 (the bare `ninja`
+# inside each zip):
+#
+#   $ file ninja            # from ninja-linux.zip
+#   ELF 64-bit LSB executable, x86-64, dynamically linked,
+#     interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, stripped
+#   $ readelf -d … | grep NEEDED
+#   libstdc++.so.6, libm.so.6, libgcc_s.so.1, libc.so.6
+#
+#   $ file ninja            # from ninja-linux-aarch64.zip
+#   ELF 64-bit LSB executable, ARM aarch64, dynamically linked,
+#     interpreter /lib/ld-linux-aarch64.so.1, for GNU/Linux 3.7.0, stripped
+#   $ readelf -d … | grep NEEDED
+#   libstdc++.so.6, libm.so.6, libgcc_s.so.1, libc.so.6
+#
+# A PT_INTERP naming the glibc loader is a HARD host requirement, so both Linux
+# keys carry `+libc.glibc`. Upstream publishes no musl or static Linux asset —
+# the Linux release surface is exactly these two zips — so there is no
+# `+libc.musl` counterpart to declare. The two non-base DT_NEEDEDs
+# (`libstdc++.so.6`, `libgcc_s.so.1`) ship in both container base images, so
+# neither leg needs an install step.
+#
+# The suffix goes on BOTH the `assets:` key here and the `platforms:` key in
+# ../mirror-base.yml — they are the same platform identifier.
+#
+# ─── Scope (verified across EVERY in-range release: v1.12.0, v1.12.1, v1.13.0,
+# v1.13.1, v1.13.2 — five in total)
+#
+# Every one publishes exactly five assets: ninja-linux.zip,
+# ninja-linux-aarch64.zip, ninja-mac.zip, ninja-win.zip, ninja-winarm64.zip.
+# Each of the six patterns below matches EXACTLY one of them in every release
+# (ninja-mac.zip is a Mach-O universal binary and legitimately serves both
+# darwin keys). A pattern matching zero is silently skipped, not an error — it
+# would yield a green run with a missing platform, which is what the anchored
+# ^…$ regexes and the version floor guard against: `^ninja-linux\.zip$` does
+# not match `ninja-linux-aarch64.zip`, and `^ninja-win\.zip$` does not match
+# `ninja-winarm64.zip`.
+assets:
+  "linux/amd64+libc.glibc":
+    - "^ninja-linux\\.zip$"
+  "linux/arm64+libc.glibc":
+    - "^ninja-linux-aarch64\\.zip$"
+  # ninja-mac.zip is a Mach-O universal binary (x86_64 + arm64) — the
+  # same asset maps to both darwin platforms.
+  darwin/amd64:
+    - "^ninja-mac\\.zip$"
+  darwin/arm64:
+    - "^ninja-mac\\.zip$"
+  windows/amd64:
+    - "^ninja-win\\.zip$"
+  windows/arm64:
+    - "^ninja-winarm64\\.zip$"
+
+asset_type:
+  # Every zip holds a single bare `ninja` / `ninja.exe` at its root — no
+  # wrapper directory — so nothing is stripped and the executable IS the
+  # content root. Identical on all six platforms, hence no per-platform
+  # override.
+  type: archive
+  strip_components: 0
+
+metadata:
+  # Paths here resolve against THIS spec's directory (unlike `tests[].script`).
+  default: metadata.json
+
+catalog:
+  logo: logo.svg
+
+versions:
+  # 1.12.0 floor: it is the first release carrying `ninja-linux-aarch64.zip`
+  # and `ninja-winarm64.zip`. v1.11.1 and below ship only linux/mac/win amd64,
+  # so two of the six patterns would match nothing and the run would publish
+  # four platforms silently.
+  min: "1.12.0"
+  new_per_run: 5
+  poll_interval: "0 */6 * * *"
+
+tests:
+  # `script:` resolves from the REPOSITORY ROOT — unlike `metadata.default` and
+  # `catalog.logo` above, which resolve against this spec's own directory.
+  - name: smoke
+    script: ninja/tests/smoke.star
+
+annotations:
+  # From the Phase 1.5 license gate:
+  #   $ gh api repos/ninja-build/ninja/license --jq '.license.spdx_id'
+  #   Apache-2.0
+  org.opencontainers.image.licenses: "Apache-2.0"
+
+announce:
+  # Spelled out, not derived from target.repository — the logical name and the
+  # physical path are related by convention only.
+  package: ninja-build/ninja
+  fork: ocx-contrib/index

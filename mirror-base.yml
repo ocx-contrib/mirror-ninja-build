@@ -1,0 +1,102 @@
+# Shared base for every spec in this repository (ninja-build).
+#
+# NOT a spec: it has no name/target/source and is never loaded on its own.
+# Everything a package owns — name, target, source, assets, asset_type,
+# metadata, catalog, tests, versions, announce, annotations — stays in that
+# package's own mirror.yml.
+#
+# ⚠️ `extends:` is a SHALLOW merge of top-level keys. A spec that sets a key
+# below replaces that block OUTRIGHT — there is no per-key merge. `platforms:`
+# is where this bites: it carries BOTH the runner matrix and the container
+# legs, so a child that restates it to tweak one runner silently drops every
+# `containers:` entry. Nothing reds — the legs simply stop existing, and every
+# os.features claim in that spec goes back to being merely asserted. Restate
+# `platforms:` IN FULL or not at all.
+
+skip_prereleases: true
+cascade: true
+
+# The fleet rule is `build_timestamp: date`; `none` here is the pre-existing
+# choice of the flat mirror this repo grew out of, kept deliberately — this
+# port changes the coordinate, not the publish policy.
+build_timestamp: none
+
+verify:
+  github_asset_digest: true
+
+concurrency:
+  # Assets are ~300 KB single-binary zips.
+  max_downloads: 8
+  max_bundles: 4
+  max_pushes: 2
+  rate_limit_ms: 100
+  max_retries: 3
+  compression_threads: 0
+
+# `off`, not `verify`: upstream ships a BARE `ninja` at the zip root (one file,
+# no directory), so the only honest PATH entry is a bare `${installPath}`. The
+# scan only looks *below* an `${installPath}/<dir>` entry, so any mode other
+# than `off` is rejected at spec load with exit 65 — "bin_scan is enabled but
+# … declares no interface-visible ${installPath}/<dir> PATH entry". The gate
+# constrains the scan, not the metadata: `binaries` stays declared by hand in
+# ninja/metadata.json. A future package here that extracts under a real `bin/`
+# should override this to `verify` in its own spec.
+bin_scan: off
+
+# ─── Platform matrix ────────────────────────────────────────────────────────
+#
+# `os.features` states what an artifact REQUIRES OF THE HOST — it is not a
+# label for how it was built. Ninja is a C++ build linked against the system
+# libc: both Linux binaries carry a PT_INTERP naming the glibc loader plus
+# `libstdc++.so.6` and `libgcc_s.so.1` (measured on v1.13.2; evidence above
+# ninja/mirror.yml's `assets:`), so both Linux keys carry `+libc.glibc`.
+# Upstream publishes no musl/static Linux asset, so there is no `+libc.musl`
+# counterpart — the glibc keys are the whole Linux surface.
+#
+# The bare `linux/amd64` / `linux/arm64` keys this repo shipped before were a
+# FALSE claim: an empty `os.features` list means "demands nothing of the host",
+# which matches musl hosts the binary cannot load on. Confirmed by running the
+# real v1.13.2 amd64 binary under alpine:3.20 — `exec: no such file or
+# directory`, the kernel failing to find the glibc loader.
+#
+# Container legs follow from what the key CLAIMS: `+libc.glibc` → ubuntu +
+# fedora (two glibc vintages), and NO alpine. The renderer rejects an alpine
+# leg on a glibc key (exit 65), and the binary genuinely cannot run there. Both
+# non-base DT_NEEDEDs ship in both images (`/usr/lib/x86_64-linux-gnu/
+# libstdc++.so.6` on ubuntu:24.04, `/usr/lib64/libstdc++.so.6` on fedora:40),
+# so neither leg installs anything — verified by running the binary in both.
+platforms:
+  "linux/amd64+libc.glibc":
+    runner: ubuntu-latest
+    containers:
+      - { image: "ubuntu:24.04", shell: bash }
+      - { image: "fedora:40",    shell: bash }
+  "linux/arm64+libc.glibc":
+    # arm64 container legs run natively — no qemu — so the runner arch must
+    # match the platform or the renderer reds the leg up front.
+    runner: ubuntu-24.04-arm
+    containers:
+      - { image: "ubuntu:24.04", shell: bash }
+      - { image: "fedora:40",    shell: bash }
+  darwin/amd64:
+    # Intel slice tested on the arm64 macos-14 runner via Rosetta 2 — GitHub's
+    # native macos-13 Intel pool is exhausted and deadlocks the push job.
+    runner: macos-14
+    prefix: ["arch", "-x86_64"]
+  darwin/arm64:
+    runner: macos-14
+    shell: bash
+  windows/amd64:
+    runner: windows-latest
+    shell: pwsh
+  windows/arm64:
+    # Native arm64 Windows runner — the amd64 pool cannot execute an ARM64 PE.
+    runner: windows-11-arm
+    shell: pwsh
+  # No `containers:` on darwin or windows — those runners have no Linux
+  # container engine, and the key is rejected at spec load.
+
+notify:
+  discord:
+    webhook_secret: OCX_MIRROR_DISCORD_HOOK
+    user_id: "227748867204972545"  # pinged in-message on failures
